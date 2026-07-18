@@ -36,9 +36,9 @@
     <Content Include="Zircon.ico" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="DevExpress.Win" Version="25.2.6" />
-    <PackageReference Include="DevExpress.Win.BonusSkins" Version="25.2.6" />
-    <PackageReference Include="DevExpress.Win.Design" Version="25.2.6" />
+    <PackageReference Include="DevExpress.Win" Version="26.1.3" />
+    <PackageReference Include="DevExpress.Win.BonusSkins" Version="26.1.3" />
+    <PackageReference Include="DevExpress.Win.Design" Version="26.1.3" />
     <PackageReference Include="System.Data.DataSetExtensions" Version="4.5.0" />
     <PackageReference Include="System.Data.SqlClient" Version="4.9.0" />
   </ItemGroup>
