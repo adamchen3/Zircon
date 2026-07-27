@@ -418,7 +418,15 @@ namespace Server.Models
                 }
             }
 
-            for (int i = AliveCount; i < Info.Count; i++)
+            int spawnCount = Info.Count;
+
+            if (!Info.Monster.IsBoss && CurrentMap.Info.Dungeon != null)
+            {
+                decimal spawnMultiplier = CurrentMap.Info.Dungeon.SpawnMultiplier;
+                spawnCount = (int)Math.Ceiling(Math.Clamp(Info.Count * spawnMultiplier, 0M, int.MaxValue));
+            }
+
+            for (int i = AliveCount; i < spawnCount; i++)
             {
                 MonsterObject mob = MonsterObject.GetMonster(Info.Monster);
 
@@ -553,14 +561,14 @@ namespace Server.Models
 
                         UserQuestTask userTask = userQuest.Tasks.FirstOrDefault(x => x.Task == task);
 
+                        if (userTask?.Completed == true) continue;
+
                         if (userTask == null)
                         {
                             userTask = SEnvir.UserQuestTaskList.CreateNewObject();
                             userTask.Task = task;
                             userTask.Quest = userQuest;
                         }
-
-                        if (userTask.Completed) continue;
 
                         userTask.Amount = 1;
 

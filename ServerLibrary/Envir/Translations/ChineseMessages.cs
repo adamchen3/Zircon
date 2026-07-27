@@ -304,6 +304,7 @@ namespace Server.Envir.Translations
         public override string NPCSocketUnlockSuccess { get; set; } = "镶嵌孔解锁成功。";
         public override string NPCSocketUnlockFailed { get; set; } = "镶嵌孔解锁失败。";
         public override string NPCSocketInsertSuccess { get; set; } = "宝石镶嵌成功。";
+        public override string NPCSocketInsertFailed { get; set; } = "宝石镶嵌失败。";
         public override string NPCSocketInsertCursed { get; set; } = "镶嵌孔受到了诅咒。";
         public override string NPCSocketResetSuccess { get; set; } = "所有已镶嵌宝石均已清除。";
         public override string NPCSocketResetFailed { get; set; } = "镶嵌重置失败。";
@@ -323,6 +324,8 @@ namespace Server.Envir.Translations
         public override string HorseDead { get; set; } = "你处于死亡状态无法骑马";
         public override string HorseOwner { get; set; } = "你没有马可以骑";
         public override string HorseMap { get; set; } = "你所在的地图无法骑马";
+        public override string HorseTameInvalidTarget { get; set; } = "该目标无法驯服。";
+        public override string HorseTameSuccess { get; set; } = "{0} 已被驯服。";
         public override string InstanceNoAction { get; set; } = "Cannot perform this action whilst on an instance.";
         public override string InstanceInvalid { get; set; } = "You cannot move to instance.";
         public override string InstanceInsufficientLevel { get; set; } = "You must be between level {0} and {1} to join instance.";

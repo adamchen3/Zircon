@@ -237,6 +237,7 @@ namespace Client.Scenes
 
         public FishingDialog FishingBox;
         public FishingCatchDialog FishingCatchBox;
+        public HorseTameDialog HorseTameBox;
 
         public ClientUserItem[] Inventory = new ClientUserItem[Globals.InventorySize];
         public ClientUserItem[] Equipment = new ClientUserItem[Globals.EquipmentSize];
@@ -784,6 +785,12 @@ namespace Client.Scenes
             };
 
             FishingCatchBox = new FishingCatchDialog
+            {
+                Parent = this,
+                Visible = false,
+            };
+
+            HorseTameBox = new HorseTameDialog
             {
                 Parent = this,
                 Visible = false,
@@ -2242,17 +2249,30 @@ namespace Client.Scenes
                         builder.AddLine($"Purity: {Math.Round(MouseItem.CurrentDurability / 1000M)}", MouseItem.CurrentDurability == 0 ? Color.Red : Color.White);
                         break;
                     case ItemType.SocketGem:
-                        long socketPurity = (long)MouseItem.CurrentDurability * 100;
-                        long socketDurability = MouseItem.Info.Durability;
+
+                        string gemType = MouseItem.Info.Shape switch
+                        {
+                            0 => "Piercing",
+                            1 => "Weapon",
+                            2 => "Armour",
+                            3 => "Curse",
+                            4 => "Reset",
+                            _ => "Unknown"
+                        };
+
+                        builder.AddLine($"Gem Type: {gemType}", Color.Aquamarine);
+
+                        decimal socketPurity = MouseItem.CurrentDurability / 1000M;
+                        decimal maximumSocketPurity = Math.Max(0, Globals.MaxGemPurity);
                         string socketPurityText;
 
-                        if (socketPurity <= socketDurability * 20)
+                        if (socketPurity <= maximumSocketPurity * 0.2M)
                             socketPurityText = "Lowest";
-                        else if (socketPurity <= socketDurability * 40)
+                        else if (socketPurity <= maximumSocketPurity * 0.4M)
                             socketPurityText = "Low";
-                        else if (socketPurity <= socketDurability * 60)
+                        else if (socketPurity <= maximumSocketPurity * 0.6M)
                             socketPurityText = "Medium";
-                        else if (socketPurity <= socketDurability * 80)
+                        else if (socketPurity <= maximumSocketPurity * 0.8M)
                             socketPurityText = "High";
                         else
                             socketPurityText = "Supreme";
@@ -4030,6 +4050,8 @@ namespace Client.Scenes
 
         public bool CanAccept(QuestInfo quest)
         {
+            if (quest?.StartNPC == null || quest.FinishNPC == null) return false;
+
             if (QuestLog.Any(x => x.Quest == quest)) return false;
 
             foreach (QuestRequirement requirement in quest.Requirements)
@@ -4163,7 +4185,7 @@ namespace Client.Scenes
                     builder.AppendFormat("Kill {0} ", task.Amount);
                     break;
                 case QuestTaskType.GainItem:
-                    builder.AppendFormat("Collect {0} {1} from ", task.Amount, task.ItemParameter?.ItemName);
+                    builder.AppendFormat("Collect {0} {1}", task.Amount, task.ItemParameter?.ItemName);
                     break;
                 case QuestTaskType.Region:
                     builder.AppendFormat("Goto {0} in {1}", task.RegionParameter?.Description, task.RegionParameter?.Map.PlayerDescription);
@@ -4172,6 +4194,11 @@ namespace Client.Scenes
 
             if (string.IsNullOrEmpty(task.MobDescription))
             {
+                if (task.Task == QuestTaskType.GainItem && task.MonsterDetails.Count > 0)
+                {
+                    builder.Append(" from ");
+                }
+
                 bool needComma = false;
                 for (int i = 0; i < task.MonsterDetails.Count; i++)
                 {
@@ -4195,7 +4222,20 @@ namespace Client.Scenes
                 }
             }
             else
-                builder.Append(task.MobDescription);
+            {
+                if (task.Task == QuestTaskType.GainItem)
+                {
+                    if (task.MonsterDetails.Count > 0)
+                    {
+                        builder.Append(" from ");
+                        builder.Append(task.MobDescription);
+                    }
+                }
+                else
+                {
+                    builder.Append(task.MobDescription);
+                }
+            }
 
             if (userQuest != null)
             {
@@ -4222,6 +4262,8 @@ namespace Client.Scenes
 
             foreach (QuestInfo quest in QuestBox.CurrentTab.Quests)
             {
+                if (quest?.FinishNPC == null) continue;
+
                 ClientUserQuest userQuest = QuestLog.First(x => x.Quest == quest);
 
                 if (quest.FinishNPC.CurrentQuest != null) continue;
@@ -4244,8 +4286,10 @@ namespace Client.Scenes
                 quest.FinishNPC.CurrentQuest = current;
             }
 
-            foreach (QuestInfo quest in QuestBox.AvailableTab.Quests)
+            foreach (QuestInfo quest in QuestBox.AvailableTab.Quests.OrderBy(q => QuestDialog.QuestTypeOrder.IndexOf(q.QuestType)))
             {
+                if (quest?.StartNPC == null) continue;
+
                 if (quest.StartNPC.CurrentQuest != null) continue;
 
                 quest.StartNPC.CurrentQuest = new CurrentQuest
@@ -4315,7 +4359,7 @@ namespace Client.Scenes
                         break;
                     case QuestType.Story:
                         icon = 56;
-                        colour = Color.Green;
+                        colour = Color.LimeGreen;
                         break;
                     case QuestType.Account:
                         icon = 36;
@@ -4921,6 +4965,14 @@ namespace Client.Scenes
                         FishingCatchBox.Dispose();
 
                     FishingCatchBox = null;
+                }
+
+                if (HorseTameBox != null)
+                {
+                    if (!HorseTameBox.IsDisposed)
+                        HorseTameBox.Dispose();
+
+                    HorseTameBox = null;
                 }
 
                 Inventory = null;

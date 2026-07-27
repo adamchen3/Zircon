@@ -241,6 +241,7 @@ namespace Server.Envir
 
         public static DBCollection<MapInfo> MapInfoList;
         public static DBCollection<InstanceInfo> InstanceInfoList;
+        public static DBCollection<DungeonInfo> DungeonInfoList;
         public static DBCollection<InstanceMapInfo> InstanceMapInfoList;
         public static DBCollection<SafeZoneInfo> SafeZoneInfoList;
         public static DBCollection<ItemInfo> ItemInfoList;
@@ -448,6 +449,7 @@ namespace Server.Envir
 
             MapInfoList = Session.GetCollection<MapInfo>();
             InstanceInfoList = Session.GetCollection<InstanceInfo>();
+            DungeonInfoList = Session.GetCollection<DungeonInfo>();
             SafeZoneInfoList = Session.GetCollection<SafeZoneInfo>();
             ItemInfoList = Session.GetCollection<ItemInfo>();
             MonsterInfoList = Session.GetCollection<MonsterInfo>();
@@ -1260,6 +1262,7 @@ namespace Server.Envir
 
             MapInfoList = null;
             InstanceInfoList = null;
+            DungeonInfoList = null;
             SafeZoneInfoList = null;
             AccountInfoList = null;
             CharacterInfoList = null;
@@ -2233,20 +2236,6 @@ namespace Server.Envir
                     break;
                 case ItemType.LootBox:
                     UpgradeLootBox(item);
-                    break;
-                case ItemType.SocketGem:
-                    switch (item.Info.Rarity)
-                    {
-                        case Rarity.Common:
-                            item.MaxDurability = item.Info.Durability / 5 * 3;
-                            break;
-                        case Rarity.Superior:
-                            item.MaxDurability = item.Info.Durability / 5 * 4;
-                            break;
-                        case Rarity.Elite:
-                            item.MaxDurability = item.Info.Durability;
-                            break;
-                    }
                     break;
             }
         }

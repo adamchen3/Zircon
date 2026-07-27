@@ -70,32 +70,30 @@ namespace Client.Models
             [110] = LibraryFile.M_WeaponAOH1,
             [111] = LibraryFile.M_WeaponAOH2,
             [112] = LibraryFile.M_WeaponAOH3,
-            [113] = LibraryFile.M_WeaponAOH3,
-            [114] = LibraryFile.M_WeaponAOH4,
-            [115] = LibraryFile.M_WeaponAOH5,
-            [116] = LibraryFile.M_WeaponAOH6,
+            [113] = LibraryFile.M_WeaponAOH4,
+            [114] = LibraryFile.M_WeaponAOH5,
+            [115] = LibraryFile.M_WeaponAOH6,
 
             [110 + FemaleOffSet] = LibraryFile.WM_WeaponAOH1,
             [111 + FemaleOffSet] = LibraryFile.WM_WeaponAOH2,
             [112 + FemaleOffSet] = LibraryFile.WM_WeaponAOH3,
-            [113 + FemaleOffSet] = LibraryFile.WM_WeaponAOH3,
-            [114 + FemaleOffSet] = LibraryFile.WM_WeaponAOH4,
-            [115 + FemaleOffSet] = LibraryFile.WM_WeaponAOH5,
-            [116 + FemaleOffSet] = LibraryFile.WM_WeaponAOH6,
+            [113 + FemaleOffSet] = LibraryFile.WM_WeaponAOH4,
+            [114 + FemaleOffSet] = LibraryFile.WM_WeaponAOH5,
+            [115 + FemaleOffSet] = LibraryFile.WM_WeaponAOH6,
 
             [120] = LibraryFile.M_WeaponADL1,
-            [122] = LibraryFile.M_WeaponADL2,
-            [126] = LibraryFile.M_WeaponADL6,
+            [121] = LibraryFile.M_WeaponADL2,
+            [125] = LibraryFile.M_WeaponADL6,
             [120 + RightHandOffSet] = LibraryFile.M_WeaponADR1,
-            [122 + RightHandOffSet] = LibraryFile.M_WeaponADR2,
-            [126 + RightHandOffSet] = LibraryFile.M_WeaponADR6,
+            [121 + RightHandOffSet] = LibraryFile.M_WeaponADR2,
+            [125 + RightHandOffSet] = LibraryFile.M_WeaponADR6,
 
             [120 + FemaleOffSet] = LibraryFile.WM_WeaponADL1,
-            [122 + FemaleOffSet] = LibraryFile.WM_WeaponADL2,
-            [126 + FemaleOffSet] = LibraryFile.WM_WeaponADL6,
+            [121 + FemaleOffSet] = LibraryFile.WM_WeaponADL2,
+            [125 + FemaleOffSet] = LibraryFile.WM_WeaponADL6,
             [120 + FemaleOffSet + RightHandOffSet] = LibraryFile.WM_WeaponADR1,
-            [122 + FemaleOffSet + RightHandOffSet] = LibraryFile.WM_WeaponADR2,
-            [126 + FemaleOffSet + RightHandOffSet] = LibraryFile.WM_WeaponADR6,
+            [121 + FemaleOffSet + RightHandOffSet] = LibraryFile.WM_WeaponADR2,
+            [125 + FemaleOffSet + RightHandOffSet] = LibraryFile.WM_WeaponADR6,
 
         };
         #endregion
@@ -642,6 +640,12 @@ namespace Client.Models
                     else
                         animation = CurrentAnimation == MirAnimation.FishingWait ? MirAnimation.FishingReel : MirAnimation.Standing;
                     break;
+                case MirAction.Taming:
+                    if (CurrentAnimation == MirAnimation.TamingCast || CurrentAnimation == MirAnimation.TamingWait)
+                        animation = MirAnimation.TamingWait;
+                    else
+                        animation = MirAnimation.TamingCast;
+                    break;
                 case MirAction.RangeAttack:
                     animation = MirAnimation.Combat1;
                     break;
@@ -778,14 +782,8 @@ namespace Client.Models
                             ArmourShift = -400;
                             break;
                         case MirAnimation.HorseStanding:
-                            ArmourShift = 80;
-                            break;
                         case MirAnimation.HorseWalking:
-                            ArmourShift = 80;
-                            break;
                         case MirAnimation.HorseRunning:
-                            ArmourShift = 80;
-                            break;
                         case MirAnimation.HorseStruck:
                             ArmourShift = 80;
                             break;
@@ -793,6 +791,10 @@ namespace Client.Models
                         case MirAnimation.FishingWait:
                         case MirAnimation.FishingReel:
                             ArmourShift = 80;
+                            break;
+                        case MirAnimation.TamingCast:
+                        case MirAnimation.TamingWait:
+                            ArmourShift = 0;
                             break;
                         default:
                             throw new ArgumentOutOfRangeException();
@@ -859,6 +861,8 @@ namespace Client.Models
                     default:
                         if (FishingState == FishingState.Cast)
                             ActionQueue.Add(new ObjectAction(MirAction.Fishing, Direction, CurrentLocation, FishingState, FloatLocation, FishFound));
+                        else if (TamingState == TamingState.Cast)
+                            ActionQueue.Add(new ObjectAction(MirAction.Taming, Direction, CurrentLocation, TamingState, TamingObjectID));
                         else
                             ActionQueue.Add(new ObjectAction(MirAction.Standing, Direction, CurrentLocation));
                         break;
@@ -937,6 +941,26 @@ namespace Client.Models
                             break;
                         case MirAnimation.FishingReel:
                             DXSoundManager.Play(SoundIndex.FishingReel);
+                            break;
+                    }
+                    break;
+                case MirAction.Taming:
+                    switch (CurrentAnimation)
+                    {
+                        case MirAnimation.TamingCast:
+                            if (FrameIndex != 5) return;
+
+                            if (TamingObject == null)
+                                return;
+
+                            var rope = new MirRopeEffect(this, TamingObject)
+                            {
+                                Blend = false,
+                                TargetObjectID = TamingObjectID,
+                                Target = this
+                            };
+                            rope.Process();
+                            Effects.Add(rope);
                             break;
                     }
                     break;

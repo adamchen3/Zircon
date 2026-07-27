@@ -259,6 +259,10 @@ namespace Library
 
         Fame = 19,
 
+        RedGem = 20,
+        BlueGem = 21,
+        CursedGem = 22,
+
         //War
         Defiance = 100,
         Might = 101,
@@ -368,6 +372,18 @@ namespace Library
         Castle = 3
     }
 
+    public enum DungeonMapRole : byte
+    {
+        Entrance = 0,
+        Lobby = 1,
+        Floor = 2,
+        SideRoom = 3,
+        Transition = 4,
+        Hub = 5,
+        Maze = 6,
+        BossFloor = 7
+    }
+
     public enum RegionType : byte
     {
         None = 0,
@@ -439,7 +455,7 @@ namespace Library
         Bundle = 35,
         [Description("Loot Box")]
         LootBox = 36,
-        [Description("Socket Gem")]
+        [Description("Gem")]
         SocketGem = 37
     }
 
@@ -460,6 +476,7 @@ namespace Library
         Mount,
         Mining,
         Fishing,
+        Taming,
         Idle
     }
 
@@ -513,7 +530,10 @@ namespace Library
 
         FishingCast,
         FishingWait,
-        FishingReel
+        FishingReel,
+
+        TamingCast,
+        TamingWait
     }
 
     public enum MessageAction
@@ -835,6 +855,9 @@ namespace Library
 
         PinkFireBall = 530,
         GreenSludgeBall = 540,
+
+        RushingMount = 700,
+        AscendingMount = 701,
     }
 
     public enum MagicProperty
@@ -953,7 +976,7 @@ namespace Library
         Shinsu = 99, //Small
 
         Shinsu1 = 100, //Large
-        UmaMaceInfidel = 101,
+        //NF_SandGuard = 101,
         AquaLizard = 102,
         CorrosivePoisonSpitter = 103,
         SandShark = 104,
@@ -1013,9 +1036,9 @@ namespace Library
         BoneBladesman = 153,
         BoneArcher = 154,
         MutantFlea = 155,
-        //NF_PurpleFlea = 156,
+        PurpleFlea = 156,
         BlasterMutantFlea = 157,
-        //NF_BlueBlasterMutantFlea = 158,
+        BlueBlasterMutantFlea = 158,
         PoisonousMutantFlea = 159,
 
         RazorTusk = 160,
@@ -1136,7 +1159,7 @@ namespace Library
         EnshrinementBox = 275,
         //NF_AssassinMale = 276,
         //NF_AssassinFemale = 277,
-        //NF_UmaMaceInfidel = 278,
+        UmaMaceInfidel = 278,
         //NF_Blank279 = 279,
 
         Salamander = 280,
@@ -1765,6 +1788,7 @@ namespace Library
 
         FishingRod = 82,
         FishingRobe = 83,
+        TamingLasso = 84,
 
         StatExtractor = 90,
         SpiritBlade = 91,
@@ -2133,6 +2157,13 @@ namespace Library
         None,
         Cast,
         Reel,
+        Cancel
+    }
+
+    public enum TamingState : byte
+    {
+        None,
+        Cast,
         Cancel
     }
 
