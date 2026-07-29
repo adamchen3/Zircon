@@ -10,6 +10,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.IO.Compression;
+using System.Buffers.Binary;
 using BcDecoder = BCnEncoder.Decoder.BcDecoder;
 using BcEncoder = BCnEncoder.Encoder.BcEncoder;
 using BcCompressionQuality = BCnEncoder.Encoder.CompressionQuality;
@@ -32,8 +33,7 @@ namespace LibraryEditor
         public string FileName;
         public string _fileName;
 
-        private FileStream _fStream;
-        private BinaryReader _bReader;
+        private ReadOnlyMemory<byte> _fileData;
         private readonly Dictionary<int, Zl2Entry> _zl2Entries = new Dictionary<int, Zl2Entry>();
         private ulong? _atlasContentFingerprint;
         private bool _atlasHasImageLayer;
@@ -49,6 +49,8 @@ namespace LibraryEditor
         public bool UseBlackKeyTransparency { get; }
         public string LastCompressionReport { get; private set; }
 
+        public static Func<string, ReadOnlyMemory<byte>> ReadLibraryData { get; set; } = _ => ReadOnlyMemory<byte>.Empty;
+
         public static string GetConvertedLibraryPath(string sourceFileName)
         {
             string directory = Path.GetDirectoryName(sourceFileName) ?? string.Empty;
@@ -63,49 +65,47 @@ namespace LibraryEditor
             _fileName = Path.ChangeExtension(fileName, null);
             UseBlackKeyTransparency = useBlackKeyTransparency;
             Images = new List<Mir3Image>();
-            if (!File.Exists(fileName))
-                return;
 
-            _fStream = File.OpenRead(fileName);
-            _bReader = new BinaryReader(_fStream);
+            //_fileData = ReadLibraryData?.Invoke(fileName) ?? ReadOnlyMemory<byte>.Empty;
+            _fileData = File.ReadAllBytes(fileName).AsMemory();
 
             ReadLibrary();
             Close();
         }
         public void ReadLibrary()
         {
-            if (_bReader == null)
+            if (_fileData.IsEmpty)
                 return;
 
-            _bReader.BaseStream.Seek(0, SeekOrigin.Begin);
-            if (TryReadCompressedContainer())
+            SpanDataReader reader = new SpanDataReader(_fileData);
+
+            reader.Seek(0, SeekOrigin.Begin);
+            if (TryReadCompressedContainer(reader))
                 return;
 
-            _bReader.BaseStream.Seek(0, SeekOrigin.Begin);
+            reader.Seek(0, SeekOrigin.Begin);
 
-            using (MemoryStream mstream = new MemoryStream(_bReader.ReadBytes(_bReader.ReadInt32())))
-            using (BinaryReader reader = new BinaryReader(mstream))
+            int payloadLength = reader.ReadInt32();
+            SpanDataReader metadataReader = new SpanDataReader(reader.ReadMemory(payloadLength));
+
+            int value = metadataReader.ReadInt32();
+
+            int count = value & 0x1FFFFFF;
+            Version = (value >> 25) & 0x7F;
+
+            if (Version == 0)
             {
-                int value = reader.ReadInt32();
+                count = value;
+            }
 
-                int count = value & 0x1FFFFFF;
-                Version = (value >> 25) & 0x7F;
+            for (int i = 0; i < count; i++)
+                Images.Add(null);
 
-                if (Version == 0)
-                {
-                    count = value;
-                }
+            for (int i = 0; i < Images.Count; i++)
+            {
+                if (!metadataReader.ReadBoolean()) continue;
 
-                for (int i = 0; i < count; i++)
-                    Images.Add(null);
-
-                for (int i = 0; i < Images.Count; i++)
-                {
-                    if (!reader.ReadBoolean()) continue;
-
-                    Images[i] = new Mir3Image(reader, Version);
-                }
-
+                Images[i] = new Mir3Image(metadataReader, Version);
             }
 
             for (int i = 0; i < Images.Count; i++)
@@ -118,77 +118,70 @@ namespace LibraryEditor
             }
         }
 
-        private bool TryReadCompressedContainer()
+        private bool TryReadCompressedContainer(SpanDataReader reader)
         {
-            if (_bReader.BaseStream.Length < ZlContainerHeader.ByteCount)
+            if (reader.Length < ZlContainerHeader.ByteCount)
                 return false;
 
-            if (!ZlContainerHeader.ReadSignature(_bReader))
+            if (!ReadZlSignature(reader))
                 return false;
 
-            Version = _bReader.ReadInt32();
-            int imageCount = _bReader.ReadInt32();
-            int atlasCount = _bReader.ReadInt32();
-            ZlContainerCompression defaultCompression = (ZlContainerCompression)_bReader.ReadByte();
-            int flags = _bReader.ReadByte();
-            _bReader.ReadInt16();
-            long metadataOffset = _bReader.ReadInt64();
-            int metadataSize = _bReader.ReadInt32();
-            long indexOffset = _bReader.ReadInt64();
-            int indexSize = _bReader.ReadInt32();
+            Version = reader.ReadInt32();
+            int imageCount = reader.ReadInt32();
+            int atlasCount = reader.ReadInt32();
+            ZlContainerCompression defaultCompression = (ZlContainerCompression)reader.ReadByte();
+            int flags = reader.ReadByte();
+            reader.ReadInt16();
+            long metadataOffset = reader.ReadInt64();
+            int metadataSize = reader.ReadInt32();
+            long indexOffset = reader.ReadInt64();
+            int indexSize = reader.ReadInt32();
+            ContainerCompression = defaultCompression;
 
             _zl2Entries.Clear();
-            _bReader.BaseStream.Seek(indexOffset, SeekOrigin.Begin);
-            using (MemoryStream indexStream = new MemoryStream(_bReader.ReadBytes(indexSize)))
-            using (BinaryReader indexReader = new BinaryReader(indexStream))
+            SpanDataReader indexReader = new SpanDataReader(reader.Slice(indexOffset, indexSize));
+            int entryCount = indexReader.ReadInt32();
+            for (int i = 0; i < entryCount; i++)
             {
-                int entryCount = indexReader.ReadInt32();
-                for (int i = 0; i < entryCount; i++)
+                Zl2Entry entry = ReadZl2Entry(indexReader);
+                _zl2Entries[entry.Id] = entry;
+            }
+
+            SpanDataReader metadataReader = new SpanDataReader(reader.Slice(metadataOffset, metadataSize));
+            int metadataVersion = metadataReader.ReadInt32();
+            int count = metadataReader.ReadInt32();
+            AtlasGroupImageCount = metadataReader.ReadInt32();
+            AtlasPageSize = metadataReader.ReadInt32();
+            Version = metadataVersion;
+            Images.Clear();
+
+            for (int i = 0; i < count; i++)
+                Images.Add(null);
+
+            for (int i = 0; i < Images.Count; i++)
+            {
+                if (!metadataReader.ReadBoolean()) continue;
+
+                Images[i] = new Mir3Image(metadataReader, Version);
+            }
+
+            AtlasPages.Clear();
+            if ((flags & ZlContainerHeader.HasAtlasFlag) != 0 && metadataReader.Position < metadataReader.Length)
+            {
+                int metadataAtlasCount = metadataReader.ReadInt32();
+                int expectedAtlasCount = atlasCount > 0 ? atlasCount : metadataAtlasCount;
+                for (int i = 0; i < expectedAtlasCount; i++)
+                    AtlasPages.Add(null);
+
+                for (int i = 0; i < expectedAtlasCount; i++)
                 {
-                    Zl2Entry entry = Zl2Entry.Read(indexReader);
-                    _zl2Entries[entry.Id] = entry;
+                    Mir3AtlasPage page = new Mir3AtlasPage(metadataReader);
+                    if (page.Id >= 0 && page.Id < AtlasPages.Count)
+                        AtlasPages[page.Id] = page;
                 }
             }
 
-            _bReader.BaseStream.Seek(metadataOffset, SeekOrigin.Begin);
-            using (MemoryStream metadataStream = new MemoryStream(_bReader.ReadBytes(metadataSize)))
-            using (BinaryReader reader = new BinaryReader(metadataStream))
-            {
-                int metadataVersion = reader.ReadInt32();
-                int count = reader.ReadInt32();
-                AtlasGroupImageCount = reader.ReadInt32();
-                AtlasPageSize = reader.ReadInt32();
-                Version = metadataVersion;
-                Images.Clear();
-
-                for (int i = 0; i < count; i++)
-                    Images.Add(null);
-
-                for (int i = 0; i < Images.Count; i++)
-                {
-                    if (!reader.ReadBoolean()) continue;
-
-                    Images[i] = new Mir3Image(reader, Version);
-                }
-
-                AtlasPages.Clear();
-                if ((flags & ZlContainerHeader.HasAtlasFlag) != 0 && reader.BaseStream.Position < reader.BaseStream.Length)
-                {
-                    int metadataAtlasCount = reader.ReadInt32();
-                    int expectedAtlasCount = atlasCount > 0 ? atlasCount : metadataAtlasCount;
-                    for (int i = 0; i < expectedAtlasCount; i++)
-                        AtlasPages.Add(null);
-
-                    for (int i = 0; i < expectedAtlasCount; i++)
-                    {
-                        Mir3AtlasPage page = new Mir3AtlasPage(reader);
-                        if (page.Id >= 0 && page.Id < AtlasPages.Count)
-                            AtlasPages[page.Id] = page;
-                    }
-                }
-
-                ReadAtlasLayerMappings(reader);
-            }
+            ReadAtlasLayerMappings(metadataReader);
 
             foreach (Mir3AtlasPage page in AtlasPages)
             {
@@ -217,14 +210,124 @@ namespace LibraryEditor
 
         public void Close()
         {
-            if (_bReader != null)
-                _bReader.Dispose();
-            if (_fStream != null)
-                _fStream.Dispose();
-
-            _bReader = null;
-            _fStream = null;
+            _fileData = ReadOnlyMemory<byte>.Empty;
         }
+
+        private static bool ReadZlSignature(SpanDataReader reader)
+        {
+            if (reader.Length - reader.Position < ZlContainerHeader.Signature.Length)
+                return false;
+
+            ReadOnlySpan<byte> signature = reader.ReadSpan(ZlContainerHeader.Signature.Length);
+            return signature.SequenceEqual(ZlContainerHeader.Signature);
+        }
+
+        private static Zl2Entry ReadZl2Entry(SpanDataReader reader)
+        {
+            return new Zl2Entry
+            {
+                Type = (ZlEntryType)reader.ReadByte(),
+                Id = reader.ReadInt32(),
+                UncompressedSize = reader.ReadInt32(),
+                CompressedSize = reader.ReadInt32(),
+                Offset = reader.ReadInt64(),
+                Compression = (ZlContainerCompression)reader.ReadByte(),
+                Codec = (ZlImageCodec)reader.ReadByte(),
+            };
+        }
+
+        internal sealed class SpanDataReader
+        {
+            private readonly ReadOnlyMemory<byte> _data;
+
+            public int Position { get; private set; }
+            public int Length => _data.Length;
+
+            public SpanDataReader(ReadOnlyMemory<byte> data)
+            {
+                _data = data;
+            }
+
+            public void Seek(long offset, SeekOrigin origin)
+            {
+                long basePosition = origin switch
+                {
+                    SeekOrigin.Begin => 0,
+                    SeekOrigin.Current => Position,
+                    SeekOrigin.End => Length,
+                    _ => throw new ArgumentOutOfRangeException(nameof(origin))
+                };
+
+                long absolute = basePosition + offset;
+                if (absolute < 0 || absolute > Length)
+                    throw new EndOfStreamException();
+
+                Position = (int)absolute;
+            }
+
+            public bool ReadBoolean() => ReadByte() != 0;
+
+            public byte ReadByte()
+            {
+                EnsureReadable(sizeof(byte));
+                return _data.Span[Position++];
+            }
+
+            public short ReadInt16()
+            {
+                EnsureReadable(sizeof(short));
+                short value = BinaryPrimitives.ReadInt16LittleEndian(_data.Span.Slice(Position, sizeof(short)));
+                Position += sizeof(short);
+                return value;
+            }
+
+            public int ReadInt32()
+            {
+                EnsureReadable(sizeof(int));
+                int value = BinaryPrimitives.ReadInt32LittleEndian(_data.Span.Slice(Position, sizeof(int)));
+                Position += sizeof(int);
+                return value;
+            }
+
+            public long ReadInt64()
+            {
+                EnsureReadable(sizeof(long));
+                long value = BinaryPrimitives.ReadInt64LittleEndian(_data.Span.Slice(Position, sizeof(long)));
+                Position += sizeof(long);
+                return value;
+            }
+
+            public ReadOnlySpan<byte> ReadSpan(int count)
+            {
+                EnsureReadable(count);
+                ReadOnlySpan<byte> span = _data.Span.Slice(Position, count);
+                Position += count;
+                return span;
+            }
+
+            public ReadOnlyMemory<byte> ReadMemory(int count)
+            {
+                EnsureReadable(count);
+                ReadOnlyMemory<byte> memory = _data.Slice(Position, count);
+                Position += count;
+                return memory;
+            }
+
+            public ReadOnlyMemory<byte> Slice(long offset, int count)
+            {
+                if (offset < 0 || count < 0 || offset > Length - count)
+                    throw new EndOfStreamException();
+
+                return _data.Slice((int)offset, count);
+            }
+
+            private void EnsureReadable(int count)
+            {
+                if (count < 0 || Position < 0 || Position > Length - count)
+                    throw new EndOfStreamException();
+            }
+        }
+
         public Mir3Image CreateImage(int index, ImageType type)
         {
             if (!CheckImage(index)) return null;
@@ -235,15 +338,15 @@ namespace LibraryEditor
             switch (type)
             {
                 case ImageType.Image:
-                    if (!image.ImageValid) image.CreateImage(_bReader, ReadCompressedPayload);
+                    if (!image.ImageValid) image.CreateImage(_fileData, ReadCompressedPayload);
                     bmp = image.Image;
                     break;
                 case ImageType.Shadow:
-                    if (!image.ShadowValid) image.CreateShadow(_bReader, ReadCompressedPayload);
+                    if (!image.ShadowValid) image.CreateShadow(_fileData, ReadCompressedPayload);
                     bmp = image.ShadowImage;
                     break;
                 case ImageType.Overlay:
-                    if (!image.OverlayValid) image.CreateOverlay(_bReader, ReadCompressedPayload);
+                    if (!image.OverlayValid) image.CreateOverlay(_fileData, ReadCompressedPayload);
                     bmp = image.OverlayImage;
                     break;
                 default:
@@ -693,15 +796,15 @@ namespace LibraryEditor
             return $"{GetAtlasLayerName(layer)} atlas: pages {count:N0}, PNG/source {FormatBytes(sourceBytes)}, runtime {FormatBytes(bc7Bytes)}, fallback {FormatBytes(fallbackBytes)}, total {FormatBytes(sourceBytes + bc7Bytes + fallbackBytes)}.";
         }
 
-        private void ReadAtlasLayerMappings(BinaryReader reader)
+        private void ReadAtlasLayerMappings(SpanDataReader reader)
         {
-            if (reader.BaseStream.Position + sizeof(int) > reader.BaseStream.Length)
+            if (reader.Position + sizeof(int) > reader.Length)
                 return;
 
             int imageLayerCount = reader.ReadInt32();
             for (int i = 0; i < imageLayerCount; i++)
             {
-                if (reader.BaseStream.Position + sizeof(int) * 3 + sizeof(short) * 8 > reader.BaseStream.Length)
+                if (reader.Position + sizeof(int) * 3 + sizeof(short) * 8 > reader.Length)
                     return;
 
                 int imageIndex = reader.ReadInt32();
@@ -734,7 +837,7 @@ namespace LibraryEditor
             }
         }
 
-        private static Rectangle ReadRectangle(BinaryReader reader)
+        private static Rectangle ReadRectangle(SpanDataReader reader)
         {
             return new Rectangle(reader.ReadInt16(), reader.ReadInt16(), reader.ReadInt16(), reader.ReadInt16());
         }
@@ -1517,12 +1620,14 @@ namespace LibraryEditor
             if (!_zl2Entries.TryGetValue(entryId, out Zl2Entry entry))
                 return null;
 
-            lock (_bReader)
-            {
-                _bReader.BaseStream.Seek(entry.Offset, SeekOrigin.Begin);
-                byte[] payload = _bReader.ReadBytes(entry.CompressedSize);
-                return Decompress(payload, entry.UncompressedSize, entry.Compression);
-            }
+            if (entry.Offset < 0 || entry.CompressedSize < 0)
+                return null;
+
+            if (entry.Offset > _fileData.Length - entry.CompressedSize)
+                return null;
+
+            byte[] payload = _fileData.Slice((int)entry.Offset, entry.CompressedSize).ToArray();
+            return Decompress(payload, entry.UncompressedSize, entry.Compression);
         }
 
         private Bitmap CreateAtlasDebugBitmap(Mir3AtlasPage page)
@@ -1617,20 +1722,18 @@ namespace LibraryEditor
             {
             }
 
-            public Mir3AtlasPage(BinaryReader reader)
+            internal Mir3AtlasPage(SpanDataReader reader)
             {
-                ZlAtlasPageMetadata metadata = ZlAtlasPageMetadata.Read(reader);
-
-                Id = metadata.Id;
-                Position = metadata.Position;
-                Width = metadata.Width;
-                Height = metadata.Height;
-                Layer = metadata.Layer;
-                Codec = metadata.Codec;
-                StoredDataSize = metadata.DataSize;
-                RuntimePreference = metadata.RuntimePreference;
-                Bc7DataSize = metadata.Bc7DataSize;
-                FallbackDataSize = metadata.FallbackDataSize;
+                Id = reader.ReadInt32();
+                Position = reader.ReadInt32();
+                Width = reader.ReadInt16();
+                Height = reader.ReadInt16();
+                Layer = (ZlAtlasLayer)reader.ReadByte();
+                Codec = (ZlImageCodec)reader.ReadByte();
+                StoredDataSize = reader.ReadInt32();
+                RuntimePreference = (ZlRuntimeTexturePreference)reader.ReadByte();
+                Bc7DataSize = reader.ReadInt32();
+                FallbackDataSize = reader.ReadInt32();
             }
 
             public void SaveHeader(BinaryWriter writer)
@@ -1903,7 +2006,7 @@ namespace LibraryEditor
             public byte ShadowType;
             public Bitmap Image, Preview;
             public bool ImageValid { get; private set; }
-            public unsafe byte* ImageData;
+            public byte[] ImageData;
             public int StoredImageDataSize;
             public int ImageBc7DataSize;
             public int ImageFallbackDataSize;
@@ -1926,7 +2029,7 @@ namespace LibraryEditor
 
             public Bitmap ShadowImage, ShadowPreview;
             public bool ShadowValid { get; private set; }
-            public unsafe byte* ShadowData;
+            public byte[] ShadowData;
             public byte[] ShadowFBytes;
             public byte[] ShadowBc7Bytes;
             public byte[] ShadowFallbackBytes;
@@ -1945,7 +2048,7 @@ namespace LibraryEditor
 
             public Bitmap OverlayImage, OverlayPreview;
             public bool OverlayValid { get; private set; }
-            public unsafe byte* OverlayData;
+            public byte[] OverlayData;
             public byte[] OverlayFBytes;
             public byte[] OverlayBc7Bytes;
             public byte[] OverlayFallbackBytes;
@@ -1972,43 +2075,51 @@ namespace LibraryEditor
                 OverlayRuntimePreference = ImageRuntimePreference;
             }
 
-            public Mir3Image(BinaryReader reader, int version)
+            internal Mir3Image(SpanDataReader reader, int version)
             {
-                ZlImageMetadata metadata = ZlImageMetadata.Read(reader, version);
+                Version = version;
+                Position = reader.ReadInt32();
+                Width = reader.ReadInt16();
+                Height = reader.ReadInt16();
+                OffSetX = reader.ReadInt16();
+                OffSetY = reader.ReadInt16();
+                ShadowType = reader.ReadByte();
+                ShadowWidth = reader.ReadInt16();
+                ShadowHeight = reader.ReadInt16();
+                ShadowOffSetX = reader.ReadInt16();
+                ShadowOffSetY = reader.ReadInt16();
+                OverlayWidth = reader.ReadInt16();
+                OverlayHeight = reader.ReadInt16();
 
-                Version = metadata.Version;
-                Position = metadata.Position;
-                Width = metadata.Width;
-                Height = metadata.Height;
-                OffSetX = metadata.OffSetX;
-                OffSetY = metadata.OffSetY;
-                ShadowType = metadata.ShadowType;
-                ShadowWidth = metadata.ShadowWidth;
-                ShadowHeight = metadata.ShadowHeight;
-                ShadowOffSetX = metadata.ShadowOffSetX;
-                ShadowOffSetY = metadata.ShadowOffSetY;
-                OverlayWidth = metadata.OverlayWidth;
-                OverlayHeight = metadata.OverlayHeight;
-                AtlasPage = metadata.AtlasPage;
-                ShadowAtlasPage = metadata.ShadowAtlasPage;
-                OverlayAtlasPage = metadata.OverlayAtlasPage;
-                SourceRectangle = metadata.SourceRectangle;
-                VisibleBounds = metadata.VisibleBounds;
-                ImageCodec = metadata.ImageCodec;
-                ShadowCodec = metadata.ShadowCodec;
-                OverlayCodec = metadata.OverlayCodec;
-                ImageRuntimePreference = metadata.ImageRuntimePreference;
-                ShadowRuntimePreference = metadata.ShadowRuntimePreference;
-                OverlayRuntimePreference = metadata.OverlayRuntimePreference;
-                StoredImageDataSize = metadata.StoredImageDataSize;
-                ImageBc7DataSize = metadata.ImageBc7DataSize;
-                ImageFallbackDataSize = metadata.ImageFallbackDataSize;
-                StoredShadowDataSize = metadata.StoredShadowDataSize;
-                ShadowBc7DataSize = metadata.ShadowBc7DataSize;
-                ShadowFallbackDataSize = metadata.ShadowFallbackDataSize;
-                StoredOverlayDataSize = metadata.StoredOverlayDataSize;
-                OverlayBc7DataSize = metadata.OverlayBc7DataSize;
-                OverlayFallbackDataSize = metadata.OverlayFallbackDataSize;
+                ImageCodec = version == 0 ? ZlImageCodec.Dxt1 : ZlImageCodec.Dxt5;
+                ShadowCodec = ImageCodec;
+                OverlayCodec = ImageCodec;
+                ImageRuntimePreference = ZlRuntimeTexturePreference.Bgra32;
+                ShadowRuntimePreference = ZlRuntimeTexturePreference.Bgra32;
+                OverlayRuntimePreference = ZlRuntimeTexturePreference.Bgra32;
+                SourceRectangle = new Rectangle(0, 0, Width, Height);
+
+                if (version >= 2)
+                {
+                    AtlasPage = reader.ReadInt32();
+                    SourceRectangle = ReadRectangle(reader);
+                    VisibleBounds = ReadRectangle(reader);
+                    ImageCodec = (ZlImageCodec)reader.ReadByte();
+                    ShadowCodec = (ZlImageCodec)reader.ReadByte();
+                    OverlayCodec = (ZlImageCodec)reader.ReadByte();
+                    ImageRuntimePreference = (ZlRuntimeTexturePreference)reader.ReadByte();
+                    ShadowRuntimePreference = (ZlRuntimeTexturePreference)reader.ReadByte();
+                    OverlayRuntimePreference = (ZlRuntimeTexturePreference)reader.ReadByte();
+                    StoredImageDataSize = reader.ReadInt32();
+                    ImageBc7DataSize = reader.ReadInt32();
+                    ImageFallbackDataSize = reader.ReadInt32();
+                    StoredShadowDataSize = reader.ReadInt32();
+                    ShadowBc7DataSize = reader.ReadInt32();
+                    ShadowFallbackDataSize = reader.ReadInt32();
+                    StoredOverlayDataSize = reader.ReadInt32();
+                    OverlayBc7DataSize = reader.ReadInt32();
+                    OverlayFallbackDataSize = reader.ReadInt32();
+                }
 
                 if (Version < 2)
                 {
@@ -2237,7 +2348,7 @@ namespace LibraryEditor
                 return pixels;
             }
 
-            public unsafe Mir3Image(Bitmap image, int version, bool useBlackKeyTransparency = false)
+            public Mir3Image(Bitmap image, int version, bool useBlackKeyTransparency = false)
             {
                 Version = version;
                 ImageCodec = GetDefaultCodec(Version);
@@ -2279,7 +2390,7 @@ namespace LibraryEditor
                 FBytes = EncodeBitmap(image, Width, Height, ImageCodec, useBlackKeyTransparency);
             }
 
-            public unsafe Mir3Image(Bitmap image, Bitmap shadow, Bitmap overlay, int version, bool useBlackKeyTransparency = false)
+            public Mir3Image(Bitmap image, Bitmap shadow, Bitmap overlay, int version, bool useBlackKeyTransparency = false)
             {
                 Version = version;
                 ImageCodec = GetDefaultCodec(Version);
@@ -2375,7 +2486,7 @@ namespace LibraryEditor
                 }
             }
 
-            public unsafe void CreateImage(BinaryReader reader, Func<int, byte[]> payloadReader = null)
+            public void CreateImage(ReadOnlyMemory<byte> fileData, Func<int, byte[]> payloadReader = null)
             {
                 if (Position < 0) return;
                 if (Position == 0 && payloadReader == null) return;
@@ -2393,20 +2504,22 @@ namespace LibraryEditor
                 }
                 else
                 {
-                    reader.BaseStream.Seek(Position, SeekOrigin.Begin);
-                    FBytes = reader.ReadBytes(ImageDataSize);
+                    if (Position > fileData.Length - ImageDataSize)
+                        return;
+
+                    FBytes = fileData.Slice(Position, ImageDataSize).ToArray();
                 }
 
                 Image = DecodeBitmap(FBytes, w, h, ImageCodec);
                 ImageValid = true;
             }
-            public unsafe void CreateShadow(BinaryReader reader, Func<int, byte[]> payloadReader = null)
+            public void CreateShadow(ReadOnlyMemory<byte> fileData, Func<int, byte[]> payloadReader = null)
             {
                 if (Position < 0) return;
                 if (Position == 0 && payloadReader == null) return;
 
                 if (!ImageValid)
-                    CreateImage(reader, payloadReader);
+                    CreateImage(fileData, payloadReader);
 
                 Size textureSize = GetTextureSize(ShadowWidth, ShadowHeight, ShadowCodec);
                 int w = textureSize.Width;
@@ -2422,20 +2535,22 @@ namespace LibraryEditor
                 else
                 {
                     int offset = ImageDataSize + ImageBc7DataSize + ImageFallbackDataSize;
-                    reader.BaseStream.Seek(Position + offset, SeekOrigin.Begin);
-                    ShadowFBytes = reader.ReadBytes(ShadowDataSize);
+                    if (Position + offset > fileData.Length - ShadowDataSize)
+                        return;
+
+                    ShadowFBytes = fileData.Slice(Position + offset, ShadowDataSize).ToArray();
                 }
 
                 ShadowImage = DecodeBitmap(ShadowFBytes, w, h, ShadowCodec);
                 ShadowValid = true;
             }
-            public unsafe void CreateOverlay(BinaryReader reader, Func<int, byte[]> payloadReader = null)
+            public void CreateOverlay(ReadOnlyMemory<byte> fileData, Func<int, byte[]> payloadReader = null)
             {
                 if (Position < 0) return;
                 if (Position == 0 && payloadReader == null) return;
 
                 if (!ImageValid)
-                    CreateImage(reader, payloadReader);
+                    CreateImage(fileData, payloadReader);
 
                 Size textureSize = GetTextureSize(OverlayWidth, OverlayHeight, OverlayCodec);
                 int w = textureSize.Width;
@@ -2451,8 +2566,10 @@ namespace LibraryEditor
                 else
                 {
                     int offset = ImageDataSize + ImageBc7DataSize + ImageFallbackDataSize + ShadowDataSize + ShadowBc7DataSize + ShadowFallbackDataSize;
-                    reader.BaseStream.Seek(Position + offset, SeekOrigin.Begin);
-                    OverlayFBytes = reader.ReadBytes(OverlayDataSize);
+                    if (Position + offset > fileData.Length - OverlayDataSize)
+                        return;
+
+                    OverlayFBytes = fileData.Slice(Position + offset, OverlayDataSize).ToArray();
                 }
 
                 OverlayImage = DecodeBitmap(OverlayFBytes, w, h, OverlayCodec);
@@ -2721,7 +2838,7 @@ namespace LibraryEditor
                     writer.Write(OverlayFallbackBytes);
             }
 
-            public static unsafe byte[] EncodeBitmap(Bitmap bitmap, short width, short height, ZlImageCodec codec, bool useBlackKeyTransparency)
+            public static byte[] EncodeBitmap(Bitmap bitmap, short width, short height, ZlImageCodec codec, bool useBlackKeyTransparency)
             {
                 Bitmap source = bitmap;
                 if (width > 0 && height > 0 && (bitmap.Width != width || bitmap.Height != height))
@@ -2736,35 +2853,42 @@ namespace LibraryEditor
 
                 try
                 {
-                if (codec == ZlImageCodec.Png)
-                {
-                    using (MemoryStream stream = new MemoryStream())
+                    if (codec == ZlImageCodec.Png)
                     {
-                        lock (PngEncoderLock)
-                            source.Save(stream, ImageFormat.Png);
+                        using (MemoryStream stream = new MemoryStream())
+                        {
+                            lock (PngEncoderLock)
+                                source.Save(stream, ImageFormat.Png);
 
-                        return stream.ToArray();
+                            return stream.ToArray();
+                        }
                     }
-                }
 
-                if (codec == ZlImageCodec.Bgra32)
-                    return PreparePixels(source, useBlackKeyTransparency, false);
+                    if (codec == ZlImageCodec.Bgra32)
+                        return PreparePixels(source, useBlackKeyTransparency, false);
 
-                if (codec == ZlImageCodec.Bc7)
-                    return EncodeBc7(source, useBlackKeyTransparency);
+                    if (codec == ZlImageCodec.Bc7)
+                        return EncodeBc7(source, useBlackKeyTransparency);
 
-                SquishFlags flags = codec == ZlImageCodec.Dxt1 ? SquishFlags.Dxt1 : SquishFlags.Dxt5;
-                byte[] pixels = PreparePixels(source, useBlackKeyTransparency, true);
-                int count = Squish.GetStorageRequirements(source.Width, source.Height, flags);
-                byte[] bytes = new byte[count];
+                    SquishFlags flags = codec == ZlImageCodec.Dxt1 ? SquishFlags.Dxt1 : SquishFlags.Dxt5;
+                    byte[] pixels = PreparePixels(source, useBlackKeyTransparency, true);
+                    int count = Squish.GetStorageRequirements(source.Width, source.Height, flags);
+                    byte[] bytes = new byte[count];
 
-                fixed (byte* dest = bytes)
-                fixed (byte* pixelSource = pixels)
-                {
-                    Squish.CompressImage((IntPtr)pixelSource, source.Width, source.Height, (IntPtr)dest, flags);
-                }
+                    GCHandle pixelSourceHandle = GCHandle.Alloc(pixels, GCHandleType.Pinned);
+                    GCHandle destinationHandle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
 
-                return bytes;
+                    try
+                    {
+                        Squish.CompressImage(pixelSourceHandle.AddrOfPinnedObject(), source.Width, source.Height, destinationHandle.AddrOfPinnedObject(), flags);
+                    }
+                    finally
+                    {
+                        destinationHandle.Free();
+                        pixelSourceHandle.Free();
+                    }
+
+                    return bytes;
                 }
                 finally
                 {
@@ -2773,7 +2897,7 @@ namespace LibraryEditor
                 }
             }
 
-            private static unsafe Bitmap DecodeBitmap(byte[] bytes, int width, int height, ZlImageCodec codec)
+            private static Bitmap DecodeBitmap(byte[] bytes, int width, int height, ZlImageCodec codec)
             {
                 bytes ??= Array.Empty<byte>();
 
@@ -2812,17 +2936,33 @@ namespace LibraryEditor
                     bytes = padded;
                 }
 
-                fixed (byte* source = bytes)
-                    Squish.DecompressImage(data.Scan0, width, height, (IntPtr)source, flags);
-
-                byte* dest = (byte*)data.Scan0;
-
-                for (int i = 0; i < height * width * 4; i += 4)
+                GCHandle sourceHandle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+                try
                 {
-                    byte b = dest[i];
-                    dest[i] = dest[i + 2];
-                    dest[i + 2] = b;
+                    Squish.DecompressImage(data.Scan0, width, height, sourceHandle.AddrOfPinnedObject(), flags);
                 }
+                finally
+                {
+                    sourceHandle.Free();
+                }
+
+                int stride = Math.Abs(data.Stride);
+                byte[] pixelBytes = new byte[stride * height];
+                Marshal.Copy(data.Scan0, pixelBytes, 0, pixelBytes.Length);
+
+                for (int y = 0; y < height; y++)
+                {
+                    int rowOffset = y * stride;
+                    for (int x = 0; x < width; x++)
+                    {
+                        int pixelOffset = rowOffset + x * 4;
+                        byte b = pixelBytes[pixelOffset];
+                        pixelBytes[pixelOffset] = pixelBytes[pixelOffset + 2];
+                        pixelBytes[pixelOffset + 2] = b;
+                    }
+                }
+
+                Marshal.Copy(pixelBytes, 0, data.Scan0, pixelBytes.Length);
 
                 bitmap.UnlockBits(data);
                 return bitmap;
